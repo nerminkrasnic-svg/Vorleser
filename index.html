@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Vorleser">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1f3a5f">
+<title>Vorleser</title>
+<style>
+  :root {
+    --bg: #f4f6f9; --card: #ffffff; --text: #1c2430; --muted: #6b7685;
+    --accent: #1f3a5f; --accent2: #3b6ea8; --hl: #ffe9a8; --border: #dde3ea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10151c; --card: #1a222d; --text: #e8edf3; --muted: #93a0b0;
+      --accent: #5b8fd0; --accent2: #7aa9e0; --hl: #5a4a14; --border: #2c3846;
+    }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 24px);
+  }
+  h1 { font-size: 26px; margin: 4px 0 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 16px; padding: 14px; margin-bottom: 14px;
+  }
+  textarea {
+    width: 100%; min-height: 180px; border: none; resize: vertical;
+    background: transparent; color: var(--text); font-size: 17px; line-height: 1.5;
+    outline: none; font-family: inherit;
+  }
+  label { display: block; font-size: 14px; color: var(--muted); margin-bottom: 6px; }
+  select, input[type=range] { width: 100%; }
+  select {
+    font-size: 16px; padding: 10px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  }
+  .row { margin-bottom: 14px; }
+  .row:last-child { margin-bottom: 0; }
+  .buttons { display: flex; gap: 10px; }
+  button {
+    flex: 1; font-size: 17px; font-weight: 600; padding: 14px 8px;
+    border-radius: 14px; border: none; cursor: pointer;
+  }
+  .primary { background: var(--accent); color: #fff; }
+  .secondary { background: var(--border); color: var(--text); }
+  .small { flex: none; font-size: 14px; padding: 8px 12px; border-radius: 10px; }
+  .toolbar { display: flex; gap: 8px; margin-top: 8px; }
+  #reader { font-size: 18px; line-height: 1.7; display: none; }
+  #reader span { border-radius: 4px; transition: background .2s; }
+  #reader span.active { background: var(--hl); }
+  #reader span:active { opacity: .6; }
+  .status { font-size: 14px; color: var(--muted); text-align: center; margin-top: 10px; }
+  .hint { font-size: 13px; color: var(--muted); margin-top: 6px; }
+</style>
+</head>
+<body>
+  <h1>📖 Vorleser</h1>
+
+  <div class="card">
+    <textarea id="text" placeholder="Artikel hier einfügen …"></textarea>
+    <div id="reader"></div>
+    <div class="toolbar">
+      <button class="small secondary" id="pasteBtn">Einfügen</button>
+      <button class="small secondary" id="clearBtn">Leeren</button>
+      <button class="small secondary" id="editBtn" style="display:none">Bearbeiten</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label for="voice">Stimme</label>
+      <select id="voice"></select>
+      <div class="hint">Am besten klingen Stimmen mit „Premium“ oder „Erweitert“.</div>
+    </div>
+    <div class="row">
+      <label for="rate">Tempo: <span id="rateVal">1.0</span>×</label>
+      <input type="range" id="rate" min="0.6" max="1.5" step="0.05" value="1">
+    </div>
+  </div>
+
+  <div class="buttons">
+    <button class="primary" id="playBtn">▶︎ Vorlesen</button>
+    <button class="secondary" id="stopBtn">■ Stopp</button>
+  </div>
+  <div class="status" id="status"></div>
+
+<script>
+(function () {
+  var synth = window.speechSynthesis;
+  var textEl = document.getElementById('text');
+  var reader = document.getElementById('reader');
+  var voiceSel = document.getElementById('voice');
+  var rateEl = document.getElementById('rate');
+  var rateVal = document.getElementById('rateVal');
+  var playBtn = document.getElementById('playBtn');
+  var stopBtn = document.getElementById('stopBtn');
+  var editBtn = document.getElementById('editBtn');
+  var statusEl = document.getElementById('status');
+
+  var voices = [];
+  var sentences = [];
+  var spans = [];
+  var index = 0;
+  var state = 'idle'; // idle | playing | paused
+  var token = 0;
+
+  function store(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+
+  if (!synth) {
+    statusEl.textContent = 'Dein Browser unterstützt keine Sprachausgabe.';
+    playBtn.disabled = true;
+    return;
+  }
+
+  function score(v) {
+    var n = (v.name + ' ' + (v.voiceURI || '')).toLowerCase();
+    var s = 0;
+    if (n.indexOf('premium') > -1) s += 30;
+    if (n.indexOf('enhanced') > -1 || n.indexOf('erweitert') > -1) s += 20;
+    if (n.indexOf('neural') > -1 || n.indexOf('natural') > -1) s += 25;
+    if (/anna|helena|petra|markus|yannick|martin|katja|conrad/.test(n)) s += 5;
+    if (n.indexOf('compact') > -1) s -= 10;
+    return s;
+  }
+
+  function loadVoices() {
+    var all = synth.getVoices();
+    var de = all.filter(function (v) { return /^de/i.test(v.lang); });
+    voices = (de.length ? de : all).sort(function (a, b) { return score(b) - score(a); });
+    var saved = load('voice');
+    voiceSel.innerHTML = '';
+    voices.forEach(function (v, i) {
+      var o = document.createElement('option');
+      o.value = i;
+      o.textContent = v.name + ' (' + v.lang + ')';
+      if (v.name === saved) o.selected = true;
+      voiceSel.appendChild(o);
+    });
+  }
+  loadVoices();
+  if (synth.onvoiceschanged !== undefined) synth.onvoiceschanged = loadVoices;
+  setTimeout(loadVoices, 500);
+
+  var savedRate = load('rate');
+  if (savedRate) rateEl.value = savedRate;
+  rateVal.textContent = Number(rateEl.value).toFixed(2).replace(/0$/, '');
+  rateEl.addEventListener('input', function () {
+    rateVal.textContent = Number(rateEl.value).toFixed(2).replace(/0$/, '');
+    store('rate', rateEl.value);
+  });
+  voiceSel.addEventListener('change', function () {
+    var v = voices[voiceSel.value];
+    if (v) store('voice', v.name);
+  });
+
+  var savedText = load('text');
+  if (savedText) textEl.value = savedText;
+  textEl.addEventListener('input', function () { store('text', textEl.value); });
+
+  function splitSentences(text) {
+    var clean = text.replace(/\r/g, '').replace(/[ \t]+/g, ' ').trim();
+    var parts = clean.split(/(?<=[.!?…:;])\s+(?=["„“»(]?[A-ZÄÖÜ0-9])|\n+/);
+    var out = [];
+    parts.forEach(function (p) {
+      p = p.trim();
+      if (!p) return;
+      // Sehr lange Sätze an Kommas teilen, damit iOS nicht abbricht
+      while (p.length > 280) {
+        var cut = p.lastIndexOf(',', 260);
+        if (cut < 80) cut = p.lastIndexOf(' ', 260);
+        if (cut < 1) cut = 260;
+        out.push(p.slice(0, cut + 1).trim());
+        p = p.slice(cut + 1).trim();
+      }
+      if (p) out.push(p);
+    });
+    return out;
+  }
+
+  function buildReader() {
+    reader.innerHTML = '';
+    spans = sentences.map(function (s, i) {
+      var sp = document.createElement('span');
+      sp.textContent = s + ' ';
+      sp.addEventListener('click', function () { startAt(i); });
+      reader.appendChild(sp);
+      return sp;
+    });
+  }
+
+  function showReader(on) {
+    reader.style.display = on ? 'block' : 'none';
+    textEl.style.display = on ? 'none' : 'block';
+    editBtn.style.display = on ? 'inline-block' : 'none';
+  }
+
+  function highlight(i) {
+    spans.forEach(function (s) { s.classList.remove('active'); });
+    if (spans[i]) {
+      spans[i].classList.add('active');
+      spans[i].scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }
+
+  function speakNext(myToken) {
+    if (myToken !== token || state !== 'playing') return;
+    if (index >= sentences.length) { finish(); return; }
+    highlight(index);
+    statusEl.textContent = 'Satz ' + (index + 1) + ' von ' + sentences.length;
+    var u = new SpeechSynthesisUtterance(sentences[index]);
+    var v = voices[voiceSel.value];
+    if (v) { u.voice = v; u.lang = v.lang; } else { u.lang = 'de-DE'; }
+    u.rate = Number(rateEl.value);
+    u.pitch = 1;
+    u.onend = function () {
+      if (myToken !== token || state !== 'playing') return;
+      index++;
+      setTimeout(function () { speakNext(myToken); }, 120);
+    };
+    u.onerror = function (e) {
+      if (myToken !== token) return;
+      if (e.error === 'interrupted' || e.error === 'canceled') return;
+      index++;
+      speakNext(myToken);
+    };
+    synth.speak(u);
+  }
+
+  function startAt(i) {
+    token++;
+    synth.cancel();
+    index = i;
+    state = 'playing';
+    playBtn.textContent = '❚❚ Pause';
+    var t = token;
+    setTimeout(function () { speakNext(t); }, 80);
+  }
+
+  function finish() {
+    state = 'idle';
+    playBtn.textContent = '▶︎ Vorlesen';
+    statusEl.textContent = 'Fertig vorgelesen.';
+    spans.forEach(function (s) { s.classList.remove('active'); });
+    index = 0;
+  }
+
+  playBtn.addEventListener('click', function () {
+    if (state === 'playing') {
+      // Pause: iOS-Pause ist unzuverlässig, daher Satz merken und abbrechen
+      token++;
+      synth.cancel();
+      state = 'paused';
+      playBtn.textContent = '▶︎ Weiter';
+      statusEl.textContent = 'Pausiert bei Satz ' + (index + 1);
+      return;
+    }
+    if (state === 'paused') { startAt(index); return; }
+    var text = textEl.value.trim();
+    if (!text) { statusEl.textContent = 'Bitte zuerst einen Text einfügen.'; return; }
+    sentences = splitSentences(text);
+    buildReader();
+    showReader(true);
+    startAt(0);
+  });
+
+  stopBtn.addEventListener('click', function () {
+    token++;
+    synth.cancel();
+    state = 'idle';
+    index = 0;
+    playBtn.textContent = '▶︎ Vorlesen';
+    statusEl.textContent = '';
+    spans.forEach(function (s) { s.classList.remove('active'); });
+  });
+
+  editBtn.addEventListener('click', function () {
+    stopBtn.click();
+    showReader(false);
+  });
+
+  document.getElementById('pasteBtn').addEventListener('click', function () {
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      navigator.clipboard.readText().then(function (t) {
+        stopBtn.click(); showReader(false);
+        textEl.value = t; store('text', t);
+      }).catch(function () { textEl.focus(); });
+    } else { textEl.focus(); }
+  });
+
+  document.getElementById('clearBtn').addEventListener('click', function () {
+    stopBtn.click(); showReader(false);
+    textEl.value = ''; store('text', '');
+    textEl.focus();
+  });
+})();
+</script>
+</body>
+</html>
